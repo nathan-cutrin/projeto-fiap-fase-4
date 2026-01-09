@@ -1,0 +1,30 @@
+[project]
+name = "projeto-4"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.128.0",
+    "ipykernel>=7.1.0",
+    "ipympl>=0.9.8",
+    "joblib>=1.5.3",
+    "matplotlib>=3.10.8",
+    "matplotlib-inline>=0.2.1",
+    "numpy>=2.4.0",
+    "pandas>=2.3.3",
+    "ruff>=0.14.10",
+    "scikit-learn>=1.8.0",
+    "seaborn>=0.13.2",
+    "streamlit>=1.52.2",
+    "taskipy>=1.14.1",
+    "tensorflow-cpu>=2.20.0",
+    "torch>=2.9.1",
+    "uvicorn>=0.40.0",
+    "yfinance",
+]
+
+[tool.taskipy.tasks]
+start = "python seu_projeto/main.py"
+lint = "ruff check ."
+test = "pytest"
