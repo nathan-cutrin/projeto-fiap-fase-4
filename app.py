@@ -1,110 +1,87 @@
-import streamlit as st
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 import torch
-import numpy as np
 import joblib
 import pandas as pd
-import matplotlib.pyplot as plt
-import yfinance as yf
-from datetime import datetime
+import numpy as np
+import os
 from model.model_class import LSTMModel
+from fastapi.middleware.cors import CORSMiddleware
 
-st.set_page_config(page_title="Petrobras Predictor", layout="wide")
-
-@st.cache_resource
-def load_model_assets():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    scaler = joblib.load("model/scaler_final.pkl")
-    model = LSTMModel(input_size=2, hidden_size=119, num_layers=1, dropout=0.0)
-    model.load_state_dict(torch.load("model/modelo_lstm_final.pth", map_location=device))
-    model.to(device)
-    model.eval()
-    return model, scaler, device
-
-def fetch_latest_data(ticker="PETR4.SA", window=20):
-    try:
-        data = yf.download(ticker, period="60d", interval="1d")
-        if data.empty: 
-            return None
-        df = data[['Close', 'Open']].tail(window).copy()
-        df.columns = ['close', 'open']
-        df.index = df.index.date
-        return df.sort_index(ascending=False)
-    except Exception:
-        return None
-
-# --- INICIALIZAÇÃO DO ESTADO ---
-model, scaler, device = load_model_assets()
-window_size = 20
-
-# Se não existe dados no estado, busca a primeira vez
-if 'df_final' not in st.session_state:
-    data = fetch_latest_data()
-    if data is None:
-        dates = pd.bdate_range(end=datetime.now(), periods=window_size)
-        data = pd.DataFrame({'close': 35.0, 'open': 35.0}, index=dates.date).sort_index(ascending=False)
-    st.session_state['df_final'] = data
-
-# --- INTERFACE ---
-st.title("📈 Predição PETR4 - Edição Manual Preservada")
-
-# Botão de Atualização (Sobrescreve o estado apenas quando clicado)
-if st.sidebar.button("🔄 Puxar Cotações do Yahoo Finance"):
-    new_data = fetch_latest_data()
-    if new_data is not None:
-        st.session_state['df_final'] = new_data
-        st.sidebar.success("Dados atualizados!")
-        st.rerun()
-
-st.markdown("### Histórico de Preços")
-st.write("Qualquer alteração feita na tabela abaixo é salva automaticamente.")
-
-# O segredo: o 'key' no data_editor faz com que ele gerencie o estado
-# E salvamos o resultado de volta no session_state
-edited_df = st.data_editor(
-    st.session_state['df_final'],
-    use_container_width=True,
-    num_rows="fixed",
-    key="my_editor" # Chave única para o widget
+app = FastAPI(
+    title="FIAP Tech Challenge - PETR4 Predictor",
+    description="API para predição de preços da Petrobras. Nota: A sequência de 20 dias deve ser enviada do mais antigo para o mais recente.",
+    version="1.0.0"
 )
 
-# Atualiza o session_state com o que foi editado para não perder ao clicar em outros botões
-st.session_state['df_final'] = edited_df
 
-if st.button("🚀 Calcular Previsão"):
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- CONFIGURAÇÕES ---
+MODEL_PATH = "model/modelo_lstm_final.pth"
+SCALER_PATH = "model/scaler_final.pkl"
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# --- CARREGAMENTO ---
+scaler = joblib.load(SCALER_PATH)
+model = LSTMModel(input_size=2, hidden_size=119, num_layers=1, dropout=0.0)
+model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+model.to(DEVICE)
+model.eval()
+
+# --- MODELO COM INPUT DEFAULT ---
+class PredictionInput(BaseModel):
+    # Field(..., json_schema_extra={...}) define o exemplo no Swagger
+    history: list[dict] = Field(
+        ..., 
+        description="Lista com 20 dicionários contendo 'close' e 'open'",
+        json_schema_extra={
+            "example": [
+                {"close": 35.10, "open": 34.80}, {"close": 35.30, "open": 35.10},
+                {"close": 35.50, "open": 35.30}, {"close": 35.80, "open": 35.50},
+                {"close": 36.00, "open": 35.80}, {"close": 36.20, "open": 36.00},
+                {"close": 36.40, "open": 36.20}, {"close": 36.30, "open": 36.40},
+                {"close": 36.10, "open": 36.30}, {"close": 35.90, "open": 36.10},
+                {"close": 35.70, "open": 35.90}, {"close": 35.50, "open": 35.70},
+                {"close": 35.30, "open": 35.50}, {"close": 35.10, "open": 35.30},
+                {"close": 35.00, "open": 35.10}, {"close": 35.20, "open": 35.00},
+                {"close": 35.40, "open": 35.20}, {"close": 35.60, "open": 35.40},
+                {"close": 35.80, "open": 35.60}, {"close": 36.10, "open": 35.80}
+            ]
+        }
+    )
+
+@app.get("/")
+def home():
+    return {"status": "online", "docs": "/docs"}
+
+@app.post("/predict")
+async def predict(data: PredictionInput):
     try:
-        # 1. Ordem cronológica para o modelo
-        df_ordered = edited_df.sort_index(ascending=True)
-        values = df_ordered[['close', 'open']].values.astype(np.float32)
-        
-        # 2. Escalonamento e Tensor
-        scaled_data = scaler.transform(values)
-        input_tensor = torch.tensor(scaled_data).unsqueeze(0).to(device)
-        
+        if len(data.history) != 20:
+            raise HTTPException(status_code=400, detail="Forneça exatamente 20 dias de histórico.")
+
+        df = pd.DataFrame(data.history)[['close', 'open']]
+        scaled_data = scaler.transform(df.values)
+        input_tensor = torch.tensor(scaled_data, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+
         with torch.no_grad():
-            pred_scaled = model(input_tensor).cpu().item()
-        
-        # 3. Desnormalização
-        dummy = np.zeros((1, scaler.n_features_in_))
-        dummy[0, 0] = pred_scaled
-        final_pred = scaler.inverse_transform(dummy)[0, 0]
+            output = model(input_tensor).cpu().item()
 
-        last_date = pd.to_datetime(edited_df.index.max())
-        next_date = (last_date + pd.offsets.BDay(1)).strftime('%d/%m/%Y')
+        dummy = np.zeros((1, 2))
+        dummy[0, 0] = output
+        prediction = scaler.inverse_transform(dummy)[0, 0]
 
-        st.markdown("---")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.metric(label=f"Fechamento Previsto ({next_date})", value=f"R$ {final_pred:.2f}")
-            st.write(f"Baseado no último fechamento editado: R$ {edited_df.iloc[0]['close']:.2f}")
-        
-        with c2:
-            fig, ax = plt.subplots(figsize=(10, 4))
-            plot_df = edited_df.sort_index(ascending=True)
-            ax.plot(plot_df.index, plot_df['close'], marker='o', label="Dados da Tabela")
-            ax.scatter(last_date + pd.offsets.BDay(1), final_pred, color='red', s=100, label="Previsão")
-            plt.xticks(rotation=45)
-            ax.legend()
-            st.pyplot(fig)
-            
+        return {
+            "prediction_next_close": round(float(prediction), 2),
+            "currency": "BRL"
+        }
     except Exception as e:
-        st.error(f"Erro: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
