@@ -7,6 +7,7 @@ import numpy as np
 import os
 from model.model_class import LSTMModel
 from fastapi.middleware.cors import CORSMiddleware
+import psutil
 
 app = FastAPI(
     title="FIAP Tech Challenge - PETR4 Predictor",
@@ -36,6 +37,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/monitoramento")
+async def monitoramento():
+    process = psutil.Process(os.getpid())
+    return {
+        "cpu_usage_percent": psutil.cpu_percent(interval=1),
+        "memory_usage_mb": process.memory_info().rss / (1024 * 1024),
+        "server_status": "online"
+    }
 
 # --- CONFIGURAÇÕES ---
 MODEL_PATH = "model/modelo_lstm_final.pth"
